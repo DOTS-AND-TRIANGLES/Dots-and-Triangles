@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dots and Triangles 2.0</title>
+<style>
+  /* ====================
+     GENERAL STYLING
+  ==================== */
+  body { margin:0; padding:0; background:#111; font-family:sans-serif; color:#fff; overflow:hidden; }
+  canvas { background:#222; display:block; margin:0 auto; border:2px solid #555; }
+  .menu, .pauseMenu, .upgradeMenu, .settingsMenu {
+    position:absolute; top:0; left:0; width:100%; height:100%; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,0.85); flex-direction:column; z-index:10;
+  }
+  .menu button, .pauseMenu button, .upgradeMenu button, .settingsMenu button { margin:5px; padding:10px 20px; font-size:16px; cursor:pointer; }
+  h1, h2 { margin-bottom:20px; }
+</style>
+</head>
+<body>
+
+<canvas id="gameCanvas" width="800" height="600" style="display:none"></canvas>
+
+<!-- MAIN MENU -->
+<div id="mainMenu" class="menu">
+  <h1>Dots and Triangles</h1>
+  <button id="startBtn">Play</button>
+  <button id="upgradesBtn">Upgrades</button>
+  <button id="settingsBtn">Settings</button>
+</div>
+
+<!-- PAUSE MENU -->
+<div id="pauseMenu" class="pauseMenu" style="display:none">
+  <div id="pauseContent">
+    <h2>Paused</h2>
+    <button id="resumeBtn">Resume</button>
+    <button id="quitBtn">Main Menu</button>
+  </div>
+</div>
+
+<!-- UPGRADES MENU -->
+<div id="upgradeMenu" class="upgradeMenu" style="display:none">
+  <h2>Upgrades</h2>
+  <div id="upgradeButtons"></div>
+  <button id="upgradeBack">Back</button>
+</div>
+
+<!-- SETTINGS MENU -->
+<div id="settingsMenu" class="settingsMenu" style="display:none">
+  <h2>Settings</h2>
+  <button id="resetSaveBtn">Reset Save</button>
+  <button id="updateBtn">Check for Updates</button>
+  <button id="settingsBackBtn">Back</button>
+</div>
+
+<script>
+/* =========================================
+   GAME VARIABLES & INITIALIZATION
+========================================= */
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+let keys = {};
+let bullets = [];
+let enemies = [];
+let healthPacks = [];
+let wave = 1;
+let kills = parseInt(localStorage.getItem("kills")||0);
+let upgrades = JSON.parse(localStorage.getItem("upgrades")||"{}");
+let characters = JSON.parse(localStorage.getItem("characters")||"[]");
+let isPaused = false;
+let isGameStarted = false;
+
+/* ====================
+   PLAYER SETUP
+==================== */
+const player = {
+  x: canvas.width/2,
+  y: canvas.height/2,
+  radius:20,
+  speed:1.5,
+  angle:0,
+  health:100,
+  maxHealth:100,
+  damage:1,
+  shots:1,
+};
+
+/* ====================
+   ENEMY TYPES
+==================== */
+const enemyTypes = [
+  { name:"Small", radius:12, speed:1.8, color:"#ff5555", damage:0.3, hp:1, flying:false, missChance:0 },
+  { name:"Medium", radius:20, speed:1.2, color:"#ff0000", damage:0.5, hp:1, flying:false, missChance:0 },
+  { name:"Large", radius:30, speed:0.7, color:"#aa0000", damage:1.0, hp:1, flying:false, missChance:0 },
+  { name:"Tank", radius:45, speed:0.4, color:"#660000", damage:2.0, hp:2, flying:false, missChance:0, wave:5 },
+  { name:"Flying", radius:15, speed:2.2, color:"#ff88ff", damage:0.4, hp:1, flying:true, missChance:0.25, wave:8 }
+];
+
+/* ====================
+   INPUT HANDLERS
+==================== */
+document.addEventListener("keydown", e=>{keys[e.key.toLowerCase()]=true; if(e.key=="Escape" && isGameStarted){ togglePause(); }});
+document.addEventListener("keyup", e=>{keys[e.key.toLowerCase()]=false;});
+canvas.addEventListener("mousemove", e=>{const r=canvas.getBoundingClientRect(); player.angle=Math.atan2(e.clientY-r.top-player.y,e.clientX-r.left-player.x)});
+canvas.addEventListener("click", ()=>{if(isGameStarted && !isPaused && player.health>0){shoot()}});
+
+/* ====================
+   MENU BUTTONS
+==================== */
+document.getElementById("startBtn").onclick = ()=>{
+  isGameStarted=true; hideAllMenus(); canvas.style.display="block"; startGame();
+};
+document.getElementById("upgradesBtn").onclick = ()=>{showMenu("upgradeMenu"); updateUpgradeButtons();};
+document.getElementById("settingsBtn").onclick = ()=>{showMenu("settingsMenu");};
+document.getElementById("resumeBtn").onclick = ()=>{togglePause();};
+document.getElementById("quitBtn").onclick = ()=>{gameOverMenu();}
+document.getElementById("upgradeBack").onclick = ()=>{showMenu("mainMenu");};
+document.getElementById("settingsBackBtn").onclick = ()=>{showMenu("mainMenu");};
+
+/* ====================
+   SETTINGS BUTTONS
+==================== */
+document.getElementById("resetSaveBtn").onclick = ()=>{
+  if(confirm("Are you sure you want to reset all save data?")){
+    localStorage.clear();
+    kills=0; upgrades={}; characters=[]; alert("Save Reset!");
+  }
+};
+document.getElementById("updateBtn").onclick = ()=>{
+  const url="https://yourusername.github.io/dots-and-triangles.html";
+  fetch(url).then(r=>r.text()).then(code=>{
+    if(confirm("Update available! Replace current game?")){
+      const win=window.open(); win.document.write(code); win.document.close();
+      alert("Copy the code from new window and replace your local file to update.");
+    }
+  }).catch(()=>alert("No internet or update not available."));
+};
+
+/* ====================
+   GAME FUNCTIONS
+==================== */
+function hideAllMenus(){ document.getElementById("mainMenu").style.display="none"; document.getElementById("upgradeMenu").style.display="none"; document.getElementById("settingsMenu").style.display="none"; document.getElementById("pauseMenu").style.display="none"; }
+function showMenu(id){ hideAllMenus(); document.getElementById(id).style.display="flex"; }
+function togglePause(){ if(player.health>0){isPaused=!isPaused; document.getElementById("pauseMenu").style.display=isPaused?"flex":"none"; } }
+function shoot(){
+  const pattern = player.shots;
+  const angleStep = Math.PI/12; // for fan pattern
+  const centerAngle = player.angle;
+  const bulletsToFire=[];
+  if(pattern==1) bulletsToFire.push({dx:Math.cos(centerAngle)*6,dy:Math.sin(centerAngle)*6});
+  else{
+    const fan = Math.min(pattern,7);
+    for(let i=0;i<fan;i++){
+      let a=centerAngle;
+      if(i<4) a+=angleStep*(i-1.5); // front fan
+      else if(i==4) a+=Math.PI/2; // right
+      else if(i==5) a-=Math.PI/2; // left
+      else if(i==6) a+=Math.PI; // back
+      bulletsToFire.push({dx:Math.cos(a)*6,dy:Math.sin(a)*6});
+    }
+  }
+  bulletsToFire.forEach(b=>{
+    bullets.push({x:player.x, y:player.y, dx:b.dx, dy:b.dy, radius:5});
+  });
+}
+
+/* ====================
+   SPAWN ENEMIES & HEALTH
+==================== */
+function spawnEnemy(){
+  const edge=Math.floor(Math.random()*4);
+  let x,y;
+  if(edge==0){x=0; y=Math.random()*canvas.height;} else if(edge==1){x=canvas.width; y=Math.random()*canvas.height;}
+  else if(edge==2){x=Math.random()*canvas.width; y=0;} else {x=Math.random()*canvas.width; y=canvas.height;}
+  let available=enemyTypes.filter(e=>!e.wave || wave>=e.wave);
+  const type=available[Math.floor(Math.random()*available.length)];
+  enemies.push({x,y,radius:type.radius,speed:type.speed,color:type.color,damage:type.damage,hp:type.hp,flying:type.flying,missChance:type.missChance,vx:0,vy:0});
+}
+function spawnHealthPack(){ const x=Math.random()*(canvas.width-40)+20; const y=Math.random()*(canvas.height-40)+20; healthPacks.push({x,y,radius:10}); }
+
+/* ====================
+   GAME UPDATE & DRAW
+==================== */
+function update(){
+  if(player.health<=0) return;
+  // player movement & wall collision
+  if(keys["w"] && player.y-player.radius>0) player.y-=player.speed;
+  if(keys["s"] && player.y+player.radius<canvas.height) player.y+=player.speed;
+  if(keys["a"] && player.x-player.radius>0) player.x-=player.speed;
+  if(keys["d"] && player.x+player.radius<canvas.width) player.x+=player.speed;
+
+  // bullets
+  bullets.forEach((b,i)=>{ b.x+=b.dx; b.y+=b.dy; if(b.x<0||b.x>canvas.width||b.y<0||b.y>canvas.height) bullets.splice(i,1); });
+
+  // enemies
+  enemies.forEach((e,ei)=>{
+    const dx=player.x-e.x, dy=player.y-e.y, dist=Math.hypot(dx,dy);
+    e.vx=(e.vx||0)*0.9 + dx/dist*e.speed*0.1;
+    e.vy=(e.vy||0)*0.9 + dy/dist*e.speed*0.1;
+    e.x+=e.vx; e.y+=e.vy;
+    // wall collision
+    if(e.x-e.radius<0) e.x=e.radius;
+    if(e.x+e.radius>canvas.width) e.x=canvas.width-e.radius;
+    if(e.y-e.radius<0) e.y=e.radius;
+    if(e.y+e.radius>canvas.height) e.y=canvas.height-e.radius;
+
+    // enemy collision
+    enemies.forEach((o,oj)=>{if(ei!=oj){const dx2=o.x-e.x,dy2=o.y-e.y,d2=Math.hypot(dx2,dy2); if(d2<e.radius+o.radius && d2>0){ e.x-=dx2/d2*0.5; e.y-=dy2/d2*0.5; } } });
+
+    // bullets hit enemy
+    bullets.forEach((b,bi)=>{
+      const d=Math.hypot(e.x-b.x,e.y-b.y);
+      if(d<e.radius+b.radius){
+        if(e.flying && !upgrades.accuracy && Math.random()<e.missChance) return;
+        e.hp-=player.damage;
+        bullets.splice(bi,1);
+        if(e.hp<=0){ enemies.splice(ei,1); kills++; localStorage.setItem("kills",kills); }
+      }
+    });
+
+    // enemy hits player
+    const pd=Math.hypot(player.x-e.x,player.y-e.y);
+    if(pd<player.radius+e.radius){ player.health-=e.damage; if(player.health<=0){player.health=0; gameOverMenu(); } }
+  });
+
+  // health packs collision
+  healthPacks.forEach((hp,hpi)=>{
+    const d=Math.hypot(player.x-hp.x,player.y-hp.y);
+    if(d<player.radius+hp.radius){ player.health+=20; if(player.health>player.maxHealth) player.health=player.maxHealth; healthPacks.splice(hpi,1); }
+    bullets.forEach((b,bi)=>{ const db=Math.hypot(hp.x-b.x,hp.y-b.y); if(db<hp.radius+b.radius){ player.health+=20; if(player.health>player.maxHealth) player.health=player.maxHealth; healthPacks.splice(hpi,1); bullets.splice(bi,1); } });
+  });
+}
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // player
+  ctx.save(); ctx.translate(player.x,player.y); ctx.rotate(player.angle); ctx.fillStyle="#0f0";
+  ctx.beginPath(); ctx.moveTo(20,0); ctx.lineTo(-15,12); ctx.lineTo(-15,-12); ctx.closePath(); ctx.fill(); ctx.restore();
+  // bullets
+  ctx.fillStyle="#fff"; bullets.forEach(b=>{ctx.beginPath();ctx.arc(b.x,b.y,b.radius,0,Math.PI*2);ctx.fill();});
+  // enemies
+  enemies.forEach(e=>{ctx.fillStyle=e.color; ctx.beginPath(); ctx.arc(e.x,e.y,e.radius,0,Math.PI*2); ctx.fill();});
+  // health packs
+  ctx.fillStyle="#0f0"; healthPacks.forEach(hp=>{ctx.beginPath();ctx.arc(hp.x,hp.y,hp.radius,0,Math.PI*2);ctx.fill();});
+  // health bar
+  const bw=200; const hp=player.health/player.maxHealth; ctx.fillStyle="#444"; ctx.fillRect(20,20,bw,20);
+  ctx.fillStyle=hp>0.3?"#0f0":"#f00"; ctx.fillRect(20,20,bw*hp,20); ctx.strokeStyle="#000"; ctx.strokeRect(20,20,bw,20);
+  // kill count
+  ctx.fillStyle="#fff"; ctx.fillText("Kills: "+kills,20,60);
+}
+
+function gameLoop(){ if(isGameStarted && !isPaused){ update(); draw(); } else if(isGameStarted) draw(); requestAnimationFrame(gameLoop); }
+
+function startGame(){ bullets=[]; enemies=[]; healthPacks=[]; player.health=player.maxHealth; wave=1; gameLoop(); }
+
+function gameOverMenu(){ isPaused=true; showMenu("pauseMenu"); document.getElementById("pauseContent").querySelector("h2").textContent="Game Over"; }
+
+/* ====================
+   UPGRADE SYSTEM
+==================== */
+function updateUpgradeButtons(){
+  const container=document.getElementById("upgradeButtons");
+  container.innerHTML="";
+  const upgs=[
+    {name:"Damage",key:"damage",desc:"One-shot Tanks (10 kills)",cost:10,oneTime:true,apply:()=>{player.damage=10;}},
+    {name:"Accuracy",key:"accuracy",desc:"Flying enemies never dodge (10 kills)",cost:10,oneTime:true,apply:()=>{upgrades.accuracy=true;}},
+    {name:"Shots",key:"shots",desc:"Extra bullets in fan pattern (100 kills)",cost:100,oneTime:false,apply:()=>{player.shots=Math.min(player.shots+1,7);}}
+  ];
+  upgs.forEach(u=>{
+    const btn=document.createElement("button");
+    btn.textContent=`${u.name} (${u.desc})`;
+    if(u.oneTime && upgrades[u.key]) btn.disabled=true;
+    btn.onclick=()=>{
+      if(kills>=u.cost){
+        kills-=u.cost;
+        localStorage.setItem("kills",kills);
+        if(u.oneTime) upgrades[u.key]=true;
+        u.apply();
+        localStorage.setItem("upgrades",JSON.stringify(upgrades));
+        updateUpgradeButtons();
+      } else alert("Not enough kills!");
+    };
+    container.appendChild(btn);
+  });
+}
+
+/* ====================
+   SPAWN INTERVALS
+==================== */
+setInterval(()=>{if(isGameStarted && !isPaused && player.health>0) spawnEnemy();},2000);
+setInterval(()=>{if(isGameStarted && !isPaused && player.health>0) spawnHealthPack();},7000);
+
+</script>
+</body>
+</html>
